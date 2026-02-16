@@ -1,0 +1,17 @@
+[package]
+name = "wardent"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+tower = "0.4"
+dashmap = "5"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+bytes = "1"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+governor = "0.6"
