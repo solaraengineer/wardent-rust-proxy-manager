@@ -1,0 +1,59 @@
+# Wardent Configuration
+# Custom Rust reverse proxy & API gateway
+
+[server]
+listen_addr = "0.0.0.0:8080"
+
+[proxy]
+upstream = "http://127.0.0.1:8000"  # Django
+
+[limits]
+max_body_size = 5_242_880  # 5MB in bytes
+default_timeout_secs = 5
+
+[rate_limit]
+requests_per_minute = 40
+burst_size = 20
+
+# Block known bot user-agents (matched via regex, case-insensitive)
+# Blocked bots get 301 redirected to redirect_url
+[filter]
+blocked_user_agents = [
+    "Googlebot",
+    "Google-Extended",
+    "GoogleOther",
+    "Bingbot",
+    "msnbot",
+    "GPTBot",
+    "ChatGPT-User",
+    "OAI-SearchBot",
+    "CCBot",
+    "facebookexternalhit",
+    "FacebookBot",
+    "meta-externalagent",
+    "DuckDuckBot",
+    "YandexBot",
+    "Baiduspider",
+    "Slurp",
+    "Twitterbot",
+    "Scrapy",
+]
+redirect_url = "https://en.wikipedia.org/wiki/Web_scraping"
+
+[error_redirects]
+rate_limited = "/error/429/"
+banned = "/error/403/"
+body_too_large = "/error/413/"
+timeout = "/error/408/"
+bad_gateway = "/error/502/"
+
+# Per-path timeout overrides
+# Matched in order, first match wins
+# Uses starts_with matching on the request path
+[[timeout_override]]
+path = "/create-checkout-session/"
+timeout_secs = 300
+
+[[timeout_override]]
+path = "/webhook/stripe/"
+timeout_secs = 90
