@@ -2,7 +2,6 @@ mod config;
 mod filter;
 mod proxy;
 mod ratelimit;
-mod tcp;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -28,7 +27,6 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -36,7 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Load config
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "wardent.toml".to_string());
@@ -67,7 +64,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
     });
 
-    // Spawn periodic rate limiter cleanup
     let cleanup_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
@@ -96,9 +92,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let service = service_fn(move |req: Request<Incoming>| {
                 let state = state.clone();
-                let client_ip = remote_addr.ip();
+                let remote_ip = remote_addr.ip();
                 async move {
-                    handle_request(req, &state, client_ip.to_string()).await
+                    handle_request(req, &state, remote_ip).await
                 }
             });
 
@@ -106,7 +102,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .serve_connection(io, service)
                 .await
             {
-                // Connection reset by peer and similar are normal
                 if !err.is_incomplete_message() {
                     warn!(error = %err, "Connection error");
                 }
@@ -115,16 +110,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Extract the real client IP from proxy headers.
+/// Stack: client -> WAF -> nginx -> Wardent
+/// The first IP in X-Forwarded-For is the real client.
+fn extract_client_ip(req: &Request<Incoming>, remote_addr: std::net::IpAddr) -> String {
+    // X-Forwarded-For: <client>, <waf>, <nginx>
+    if let Some(xff) = req.headers().get("x-forwarded-for") {
+        if let Ok(xff_str) = xff.to_str() {
+            if let Some(first_ip) = xff_str.split(',').next() {
+                let trimmed = first_ip.trim();
+                if trimmed.parse::<std::net::IpAddr>().is_ok() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    // Fallback: X-Real-IP
+    if let Some(real_ip) = req.headers().get("x-real-ip") {
+        if let Ok(ip_str) = real_ip.to_str() {
+            let trimmed = ip_str.trim();
+            if trimmed.parse::<std::net::IpAddr>().is_ok() {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    // Last resort: raw TCP addr (will be nginx's IP, but better than nothing)
+    remote_addr.to_string()
+}
+
 async fn handle_request(
     req: Request<Incoming>,
     state: &AppState,
-    client_ip: String,
+    remote_addr: std::net::IpAddr,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    let client_ip = extract_client_ip(&req, remote_addr);
     let ip: std::net::IpAddr = client_ip
         .parse()
         .unwrap_or_else(|_| "0.0.0.0".parse().unwrap());
 
-    // 1. Rate limit check
+    info!(client_ip = %client_ip, remote_addr = %remote_addr, "Request received");
+
+    // 1. Rate limit check (now per actual client, not nginx)
     if let Some(response) = state.rate_limiter.check_rate_limit(ip, &state.config.error_redirects) {
         return Ok(response);
     }

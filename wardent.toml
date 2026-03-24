@@ -5,18 +5,16 @@
 listen_addr = "0.0.0.0:8080"
 
 [proxy]
-upstream = "http://127.0.0.1:8000"  # Django
+upstream = "http://127.0.0.1:8000"
+secret_key = "6c23cd9d362b3c84b55ca388c91a220c7419010bea2326f3174b964ldobuady2d4daf4f20"
 
 [limits]
-max_body_size = 5_242_880  # 5MB in bytes
+max_body_size = 5_242_880 #5 Mb
 default_timeout_secs = 5
 
 [rate_limit]
-requests_per_minute = 40
+requests_per_minute = 120
 burst_size = 20
-
-# Block known bot user-agents (matched via regex, case-insensitive)
-# Blocked bots get 301 redirected to redirect_url
 [filter]
 blocked_user_agents = [
     "Googlebot",
@@ -57,3 +55,5 @@ timeout_secs = 300
 [[timeout_override]]
 path = "/webhook/stripe/"
 timeout_secs = 90
+
+

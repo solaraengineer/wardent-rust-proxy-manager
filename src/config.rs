@@ -1,7 +1,11 @@
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
-
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProxyConfig {
+    pub upstream: String,
+    pub secret_key: String,
+}
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub server: ServerConfig,
@@ -17,11 +21,6 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub listen_addr: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ProxyConfig {
-    pub upstream: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -15,8 +15,8 @@ use crate::config::{RateLimitConfig, ErrorRedirects};
 
 type Limiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
-const BAN_DURATION: Duration = Duration::from_secs(3600); // 1 hour
-const MAX_VIOLATIONS: u32 = 3;
+const BAN_DURATION: Duration = Duration::from_secs(300);
+const MAX_VIOLATIONS: u32 = 5;
 
 struct ViolationRecord {
     count: u32,
@@ -47,26 +47,19 @@ impl RateLimit {
         }
     }
 
-    /// Check if an IP is banned or rate limited.
-    /// Returns Some(Response) with 302 redirect if blocked, None if allowed.
     pub fn check_rate_limit(
         &self,
         ip: IpAddr,
-        redirects: &ErrorRedirects,
+        _redirects: &ErrorRedirects,
     ) -> Option<Response<Full<Bytes>>> {
-        // 1. Check if IP is banned
         if let Some(ban_expiry) = self.banned.get(&ip) {
             if Instant::now() < *ban_expiry {
                 let remaining = ban_expiry.duration_since(Instant::now());
                 error!(ip = %ip, remaining_secs = remaining.as_secs(), "Banned IP attempted request");
-                return Some(redirect(&redirects.banned));
-            } else {
-                self.banned.remove(&ip);
-                self.violations.remove(&ip);
+                return Some(status_response(StatusCode::FORBIDDEN));
             }
         }
 
-        // 2. Check rate limit
         let limiter = self
             .limiters
             .entry(ip)
@@ -94,15 +87,14 @@ impl RateLimit {
                     let ban_until = Instant::now() + BAN_DURATION;
                     self.banned.insert(ip, ban_until);
                     error!(ip = %ip, duration_secs = BAN_DURATION.as_secs(), "IP banned");
-                    return Some(redirect(&redirects.banned));
+                    return Some(status_response(StatusCode::FORBIDDEN));
                 }
 
-                Some(redirect(&redirects.rate_limited))
+                Some(status_response(StatusCode::TOO_MANY_REQUESTS))
             }
         }
     }
 
-    /// Periodic cleanup of expired bans and stale entries.
     pub fn cleanup(&self) {
         let now = Instant::now();
 
@@ -124,10 +116,9 @@ impl RateLimit {
     }
 }
 
-fn redirect(location: &str) -> Response<Full<Bytes>> {
+fn status_response(status: StatusCode) -> Response<Full<Bytes>> {
     Response::builder()
-        .status(StatusCode::FOUND)
-        .header("Location", location)
+        .status(status)
         .header("Content-Length", "0")
         .body(Full::new(Bytes::new()))
         .unwrap()

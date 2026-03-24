@@ -7,8 +7,6 @@ use tracing::{error, info, instrument};
 
 use crate::config::Config;
 
-/// Forward a request to the upstream Django server.
-/// Enforces body size limits and per-path timeouts.
 #[instrument(skip_all, fields(method = %req.method(), path = %req.uri().path()))]
 pub async fn forward(
     req: Request<Incoming>,
@@ -27,7 +25,6 @@ pub async fn forward(
         "Forwarding request"
     );
 
-    // Collect the incoming body with size limit check
     let body_result = tokio::time::timeout(timeout, collect_body(req, config)).await;
 
     let (parts, body_bytes) = match body_result {
@@ -35,11 +32,10 @@ pub async fn forward(
         Ok(Err(response)) => return Ok(response),
         Err(_) => {
             error!("Timeout reading request body");
-            return Ok(redirect(&config.error_redirects.timeout));
+            return Ok(status_response(StatusCode::GATEWAY_TIMEOUT));
         }
     };
 
-    // Build upstream URI
     let upstream_uri = format!(
         "{}{}",
         config.proxy.upstream.trim_end_matches('/'),
@@ -50,11 +46,10 @@ pub async fn forward(
         Ok(uri) => uri,
         Err(e) => {
             error!(error = %e, "Failed to parse upstream URI");
-            return Ok(redirect(&config.error_redirects.bad_gateway));
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
         }
     };
 
-    // Build the outgoing request
     let mut builder = Request::builder()
         .method(method)
         .uri(upstream_uri);
@@ -71,44 +66,42 @@ pub async fn forward(
     }
     builder = builder.header("X-Forwarded-For", client_ip);
     builder = builder.header("X-Forwarded-Proto", "https");
+    builder = builder.header("X-Wardent-Secret", &config.proxy.secret_key);
 
     let outgoing = builder
         .body(Full::new(body_bytes.clone()))
         .expect("Failed to build outgoing request");
 
-    // Send to upstream with timeout
     let upstream_result = tokio::time::timeout(
         timeout,
         send_upstream(outgoing, &config.proxy.upstream),
     )
-    .await;
+        .await;
 
     match upstream_result {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(e)) => {
             error!(error = %e, "Upstream request failed");
-            Ok(redirect(&config.error_redirects.bad_gateway))
+            Ok(status_response(StatusCode::BAD_GATEWAY))
         }
         Err(_) => {
             error!(path = path, timeout_secs = timeout_secs, "Upstream timeout");
-            Ok(redirect(&config.error_redirects.timeout))
+            Ok(status_response(StatusCode::GATEWAY_TIMEOUT))
         }
     }
 }
 
-/// Collect the request body, enforcing max body size.
 async fn collect_body(
     req: Request<Incoming>,
     config: &Config,
 ) -> Result<(hyper::http::request::Parts, Bytes), Response<Full<Bytes>>> {
     let max_size = config.limits.max_body_size;
 
-    // Check Content-Length header first (fast path)
     if let Some(content_length) = req.headers().get("content-length") {
         if let Ok(len_str) = content_length.to_str() {
             if let Ok(len) = len_str.parse::<u64>() {
                 if len > max_size {
-                    return Err(redirect(&config.error_redirects.body_too_large));
+                    return Err(status_response(StatusCode::PAYLOAD_TOO_LARGE));
                 }
             }
         }
@@ -121,18 +114,17 @@ async fn collect_body(
         Ok(collected) => {
             let body_bytes = collected.to_bytes();
             if body_bytes.len() as u64 > max_size {
-                return Err(redirect(&config.error_redirects.body_too_large));
+                return Err(status_response(StatusCode::PAYLOAD_TOO_LARGE));
             }
             Ok((parts, body_bytes))
         }
-        Err(_) => Err(redirect(&config.error_redirects.bad_gateway)),
+        Err(_) => Err(status_response(StatusCode::BAD_GATEWAY)),
     }
 }
 
-/// Send a request to the upstream server using hyper's HTTP client.
 async fn send_upstream(
     req: Request<Full<Bytes>>,
-    upstream_base: &str,
+    _upstream_base: &str,
 ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
@@ -147,10 +139,9 @@ async fn send_upstream(
     Ok(Response::from_parts(parts, Full::new(body_bytes)))
 }
 
-fn redirect(location: &str) -> Response<Full<Bytes>> {
+fn status_response(status: StatusCode) -> Response<Full<Bytes>> {
     Response::builder()
-        .status(StatusCode::FOUND)
-        .header("Location", location)
+        .status(status)
         .header("Content-Length", "0")
         .body(Full::new(Bytes::new()))
         .unwrap()

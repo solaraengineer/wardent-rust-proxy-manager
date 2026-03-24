@@ -1,0 +1,86 @@
+name: Deploy Wardent
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  validate:
+    name: Validate Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Check for secrets in repo
+        run: |
+          FOUND_ENV=$(find . -name '.env' -not -path './.git/*' | head -20)
+          
+          if [ -n "$FOUND_ENV" ]; then
+            echo "❌ .env file(s) found in repo:"
+            echo "$FOUND_ENV"
+            exit 1
+          fi
+          
+          echo "✅ No secrets found"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Wardent
+        run: |
+          cargo build --release
+          echo "✅ Build succeeded"
+
+      - name: Run tests
+        run: |
+          cargo test
+          echo "✅ Tests passed"
+
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: |
+          cargo build --release
+          echo "✅ Release binary built"
+
+      - name: Deploy to Server 1
+        env:
+          SSH_PRIVATE_KEY_BASE64: ${{ secrets.SOLARA_BASE64 }}
+          SERVER_IP: ${{ secrets.SERVER_IP_1 }}
+        run: |
+          echo "$SSH_PRIVATE_KEY_BASE64" > SOLARA
+          chmod 600 SOLARA
+          
+          echo "Deploying Wardent to Server 1 ($SERVER_IP)..."
+          
+          for i in {1..10}; do
+            if ssh -i SOLARA -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$SERVER_IP "echo ready" 2>/dev/null; then
+              break
+            fi
+            echo "Waiting for server... ($i/10)"
+            sleep 10
+          done
+          
+          scp -i SOLARA -o StrictHostKeyChecking=no \
+            target/release/wardent ubuntu@$SERVER_IP:/tmp/wardent
+          
+          ssh -i SOLARA -o StrictHostKeyChecking=no ubuntu@$SERVER_IP << 'ENDSSH'
+          sudo systemctl stop wardent
+          sudo cp /tmp/wardent /etc/wardent
+          sudo chmod +x /etc/wardent
+          sudo systemctl start wardent
+          sudo systemctl status wardent --no-pager
+          echo "✅ Wardent deployed and running"
+          ENDSSH
+          
+          echo "✅ Server 1 deployed"
