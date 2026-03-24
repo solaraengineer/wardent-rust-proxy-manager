@@ -45,14 +45,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binary
-        run: |
-          cargo build --release
-          echo "✅ Release binary built"
-
       - name: Deploy to Server 1
         env:
           SSH_PRIVATE_KEY_BASE64: ${{ secrets.SOLARA_BASE64 }}
@@ -71,13 +63,19 @@ jobs:
             sleep 10
           done
           
-          scp -i SOLARA -o StrictHostKeyChecking=no \
-            target/release/wardent ubuntu@$SERVER_IP:/tmp/wardent
+          rsync -avz --delete \
+            -e "ssh -i SOLARA -o StrictHostKeyChecking=no" \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'target' \
+            --exclude 'wardent.toml' \
+            . ubuntu@$SERVER_IP:/etc/wardent/
           
           ssh -i SOLARA -o StrictHostKeyChecking=no ubuntu@$SERVER_IP << 'ENDSSH'
+          cd /etc/wardent
+          cargo build --release
           sudo systemctl stop wardent
-          sudo cp /tmp/wardent /etc/wardent
-          sudo chmod +x /etc/wardent
+          sudo cp target/release/wardent /etc/wardent/wardent
           sudo systemctl start wardent
           sudo systemctl status wardent --no-pager
           echo "✅ Wardent deployed and running"
